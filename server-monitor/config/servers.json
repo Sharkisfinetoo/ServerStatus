@@ -1,0 +1,35 @@
+{
+  "interval": 30,
+  "dashboard_port": 8888,
+  "auth": {
+    "enabled": true,
+    "token": "CHANGE-ME-SECRET-TOKEN"
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "servers": [
+    {
+      "name": "Localhost",
+      "host": "127.0.0.1",
+      "checks": {
+        "ping": true,
+        "tcp": [22],
+        "http": []
+      }
+    },
+    {
+      "name": "Example Web",
+      "host": "example.com",
+      "checks": {
+        "ping": true,
+        "tcp": [80, 443],
+        "http": [
+          { "url": "https://example.com/", "expected_code": 200, "keyword": "Example" }
+        ]
+      }
+    }
+  ]
+}

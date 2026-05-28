@@ -1,0 +1,17 @@
+{
+  "interval": 20,
+  "dashboard_port": 9000,
+  "auth": {
+    "enabled": true,
+    "token": "CHANGE-ME-AGGREGATOR-TOKEN"
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "instances_auth_token": "CHANGE-ME-SECRET-TOKEN",
+  "instances": [
+    { "name": "DC-1 / local", "url": "http://127.0.0.1:8888/api/state" }
+  ]
+}

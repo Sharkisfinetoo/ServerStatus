@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>monitor-aggregator</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1115; color: #e6e6e6; }
+  header { padding: 16px 24px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .meta { color: #888; font-size: 13px; }
+  .tabs { display: flex; gap: 6px; padding: 12px 24px 0; border-bottom: 1px solid #222; flex-wrap: wrap; }
+  .tab { padding: 8px 14px; cursor: pointer; border-radius: 6px 6px 0 0; color: #aaa; border: 1px solid transparent; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .tab.active { background: #181a20; color: #fff; border-color: #262830; border-bottom-color: transparent; }
+  .tab .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .tab .dot.ok { background: #57c785; }
+  .tab .dot.fail { background: #e06c75; }
+  main { padding: 20px 24px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: #181a20; border: 1px solid #262830; border-radius: 8px; padding: 14px 16px; }
+  .card.ok { border-color: #1f5132; }
+  .card.fail { border-color: #58151c; }
+  .name { font-weight: 600; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
+  .host { color: #8a8a8a; font-size: 12px; margin-top: 2px; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+  .badge.ok { background: #1f5132; color: #d1f1d8; }
+  .badge.fail { background: #58151c; color: #f5c2c7; }
+  ul.checks { list-style: none; padding: 0; margin: 10px 0 0 0; font-size: 13px; }
+  ul.checks li { padding: 3px 0; display: flex; justify-content: space-between; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.ok { background: #57c785; }
+  .dot.fail { background: #e06c75; }
+  .unreachable { padding: 14px 16px; background: #2a1518; border: 1px solid #58151c; border-radius: 8px; color: #f5c2c7; }
+  .login { max-width: 360px; margin: 80px auto; padding: 24px; background: #181a20; border: 1px solid #262830; border-radius: 8px; }
+  .login input { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #0f1115; color: #e6e6e6; font-size: 14px; }
+  .login button { width: 100%; margin-top: 12px; padding: 10px; border-radius: 6px; border: 0; background: #2f6feb; color: #fff; font-size: 14px; cursor: pointer; }
+  .err { color: #e06c75; font-size: 13px; margin-top: 8px; }
+  .logout { background: transparent; border: 1px solid #333; color: #aaa; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const TOKEN_KEY = "monitor-aggregator-token";
+let activeTab = 0;
+
+async function api(path) {
+  const token = sessionStorage.getItem(TOKEN_KEY) || "";
+  const res = await fetch(path, { headers: token ? { Authorization: "Bearer " + token } : {} });
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) throw new Error("http " + res.status);
+  return res.json();
+}
+
+function renderLogin(err) {
+  document.getElementById("app").innerHTML = `
+    <div class="login">
+      <h1 style="margin:0 0 12px 0">monitor-aggregator</h1>
+      <p style="color:#8a8a8a;font-size:13px;margin:0 0 12px 0">Введите токен доступа</p>
+      <input id="t" type="password" placeholder="token" autofocus>
+      <button id="ok">Войти</button>
+      ${err ? `<div class="err">${err}</div>` : ""}
+    </div>`;
+  const submit = () => {
+    sessionStorage.setItem(TOKEN_KEY, document.getElementById("t").value);
+    bootstrap();
+  };
+  document.getElementById("ok").onclick = submit;
+  document.getElementById("t").onkeydown = (e) => { if (e.key === "Enter") submit(); };
+}
+
+function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
+
+function checkRow(label, ok, detail) {
+  return `<li><span><span class="dot ${ok ? "ok" : "fail"}"></span>${label}</span><span style="color:#888">${detail || ""}</span></li>`;
+}
+
+function renderServer(srv) {
+  const c = srv.checks || {};
+  const rows = [];
+  if (c.ping) rows.push(checkRow("ping", c.ping.ok, c.ping.ok ? (c.ping.latency_ms + " ms") : (c.ping.error || "fail")));
+  for (const t of (c.tcp || [])) rows.push(checkRow("tcp " + t.port, t.ok, t.ok ? (t.latency_ms + " ms") : (t.error || "fail")));
+  for (const h of (c.http || [])) rows.push(checkRow("http " + h.url, h.ok, h.ok ? (h.code + (h.keyword ? " ✓kw" : "")) : ("code " + (h.code || "?"))));
+  return `
+    <div class="card ${srv.ok ? "ok" : "fail"}">
+      <div class="name">
+        <span>${srv.name}</span>
+        <span class="badge ${srv.ok ? "ok" : "fail"}">${srv.ok ? "OK" : "FAIL"}</span>
+      </div>
+      <div class="host">${srv.host}</div>
+      <ul class="checks">${rows.join("")}</ul>
+    </div>`;
+}
+
+function instanceOk(inst) {
+  if (!inst.reachable) return false;
+  return (inst.state?.servers || []).every(s => s.ok);
+}
+
+function renderInstanceContent(inst) {
+  if (!inst.reachable) {
+    return `<div class="unreachable">⚠ ДЦ недоступен: ${inst.error || "unknown"}<div style="color:#888;font-size:12px;margin-top:4px">${inst.url}</div></div>`;
+  }
+  const servers = inst.state?.servers || [];
+  if (servers.length === 0) return `<p style="color:#888">Серверы не настроены.</p>`;
+  return `<div class="grid">${servers.map(renderServer).join("")}</div>`;
+}
+
+function renderDashboard(state) {
+  const instances = state.instances || [];
+  if (activeTab >= instances.length) activeTab = 0;
+  const tabs = instances.map((inst, i) => `
+    <div class="tab ${i === activeTab ? "active" : ""}" data-idx="${i}">
+      <span class="dot ${instanceOk(inst) ? "ok" : "fail"}"></span>${inst.name}
+    </div>`).join("");
+  const content = instances[activeTab] ? renderInstanceContent(instances[activeTab]) : "<p>Нет данных.</p>";
+
+  document.getElementById("app").innerHTML = `
+    <header>
+      <div>
+        <h1>monitor-aggregator</h1>
+        <div class="meta">Обновлено: ${fmtTime(state.generated_at)} · интервал ${state.interval}s · ДЦ: ${instances.length}</div>
+      </div>
+      <button class="logout" id="logout">Выйти</button>
+    </header>
+    <div class="tabs">${tabs}</div>
+    <main>${content}</main>`;
+
+  document.querySelectorAll(".tab").forEach(el => {
+    el.onclick = () => { activeTab = +el.dataset.idx; renderDashboard(state); };
+  });
+  document.getElementById("logout").onclick = () => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    renderLogin();
+  };
+}
+
+async function bootstrap() {
+  try {
+    const req = await fetch("/api/auth-required").then(r => r.json()).catch(() => ({ required: false }));
+    if (req.required && !sessionStorage.getItem(TOKEN_KEY)) {
+      renderLogin();
+      return;
+    }
+    const state = await api("/api/state");
+    renderDashboard(state);
+  } catch (e) {
+    if (e.message === "unauthorized") renderLogin("Неверный токен");
+    else document.getElementById("app").innerHTML = `<main><p class="err">Ошибка: ${e.message}</p></main>`;
+  }
+}
+
+bootstrap();
+setInterval(bootstrap, 15000);
+</script>
+</body>
+</html>
