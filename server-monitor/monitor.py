@@ -247,7 +247,8 @@ def make_handler(poller: Poller, config: dict):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
         def _send_file(self, path: Path, content_type: str) -> None:
             try:
@@ -259,7 +260,8 @@ def make_handler(poller: Poller, config: dict):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            if self.command != "HEAD":
+                self.wfile.write(data)
 
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
@@ -282,6 +284,8 @@ def make_handler(poller: Poller, config: dict):
                 return
 
             self.send_error(404)
+
+        do_HEAD = do_GET
 
     return Handler
 
