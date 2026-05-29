@@ -73,6 +73,7 @@ async function api(path) {
 
 function renderLogin(err) {
   shellBuilt = false;
+  loginVisible = true;
   const isUserpass = authMode === "userpass";
   const fields = isUserpass
     ? `<input id="u" placeholder="логин" autofocus>
@@ -161,6 +162,7 @@ function renderInstanceContent(inst) {
 
 let lastState = null;
 let shellBuilt = false;
+let loginVisible = false;
 
 function buildShell() {
   document.getElementById("app").innerHTML = `
@@ -197,6 +199,7 @@ function buildShell() {
 
 function renderDashboard(state) {
   lastState = state;
+  loginVisible = false;
   if (!shellBuilt) { buildShell(); shellBuilt = true; }
 
   const instances = state.instances || [];
@@ -289,7 +292,7 @@ async function bootstrap() {
 }
 
 bootstrap();
-setInterval(bootstrap, 15000);
+setInterval(() => { if (!loginVisible) bootstrap(); }, 15000);
 </script>
 </body>
 </html>
