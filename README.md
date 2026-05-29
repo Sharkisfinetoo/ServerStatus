@@ -80,7 +80,12 @@ python3 monitor-aggregator/aggregator.py
 {
   "interval": 20,
   "dashboard_port": 9000,
-  "auth": { "enabled": true, "token": "токен-дашборда" },
+  "auth": {
+    "enabled": true,
+    "username": "admin",
+    "password": "пароль",
+    "token": ""
+  },
   "telegram": { "enabled": true, "bot_token": "...", "chat_id": "..." },
   "instances_auth_token": "токен-от-server-monitor",
   "instances": [
@@ -89,6 +94,13 @@ python3 monitor-aggregator/aggregator.py
   ]
 }
 ```
+
+**Авторизация агрегатора** поддерживает два режима (можно комбинировать):
+
+- **Логин + пароль** — если в `auth` заданы `username` и `password`, дашборд показывает форму с двумя полями. После входа выдаётся session-cookie (HttpOnly, 7 дней).
+- **Bearer-токен** — если задан `auth.token`, продолжает работать для curl/скриптов. Если `username`/`password` не заданы, дашборд покажет форму ввода одного токена (legacy-режим).
+
+Для `server-monitor` логин/пароль не поддерживается — там только токен (это машинный API, который опрашивает агрегатор).
 
 ## API
 

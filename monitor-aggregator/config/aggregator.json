@@ -3,7 +3,9 @@
   "dashboard_port": 9000,
   "auth": {
     "enabled": true,
-    "token": "CHANGE-ME-AGGREGATOR-TOKEN"
+    "username": "admin",
+    "password": "CHANGE-ME-PASSWORD",
+    "token": ""
   },
   "telegram": {
     "enabled": false,

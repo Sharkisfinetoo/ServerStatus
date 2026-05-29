@@ -45,30 +45,68 @@
 <script>
 const TOKEN_KEY = "monitor-aggregator-token";
 let activeTab = 0;
+let authMode = "none"; // "none" | "token" | "userpass"
 
 async function api(path) {
-  const token = sessionStorage.getItem(TOKEN_KEY) || "";
-  const res = await fetch(path, { headers: token ? { Authorization: "Bearer " + token } : {} });
+  const headers = {};
+  if (authMode === "token") {
+    const token = sessionStorage.getItem(TOKEN_KEY) || "";
+    if (token) headers.Authorization = "Bearer " + token;
+  }
+  const res = await fetch(path, { headers, credentials: "same-origin" });
   if (res.status === 401) throw new Error("unauthorized");
   if (!res.ok) throw new Error("http " + res.status);
   return res.json();
 }
 
 function renderLogin(err) {
+  const isUserpass = authMode === "userpass";
+  const fields = isUserpass
+    ? `<input id="u" placeholder="логин" autofocus>
+       <input id="p" type="password" placeholder="пароль" style="margin-top:8px">`
+    : `<input id="t" type="password" placeholder="токен" autofocus>`;
   document.getElementById("app").innerHTML = `
     <div class="login">
       <h1 style="margin:0 0 12px 0">monitor-aggregator</h1>
-      <p style="color:#8a8a8a;font-size:13px;margin:0 0 12px 0">Введите токен доступа</p>
-      <input id="t" type="password" placeholder="token" autofocus>
+      <p style="color:#8a8a8a;font-size:13px;margin:0 0 12px 0">Вход</p>
+      ${fields}
       <button id="ok">Войти</button>
       ${err ? `<div class="err">${err}</div>` : ""}
     </div>`;
-  const submit = () => {
-    sessionStorage.setItem(TOKEN_KEY, document.getElementById("t").value);
-    bootstrap();
+  const submit = async () => {
+    if (isUserpass) {
+      const u = document.getElementById("u").value;
+      const p = document.getElementById("p").value;
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: u, password: p }),
+          credentials: "same-origin",
+        });
+        if (res.ok) bootstrap();
+        else renderLogin("Неверный логин или пароль");
+      } catch (e) {
+        renderLogin("Ошибка сети: " + e.message);
+      }
+    } else {
+      sessionStorage.setItem(TOKEN_KEY, document.getElementById("t").value);
+      bootstrap();
+    }
   };
   document.getElementById("ok").onclick = submit;
-  document.getElementById("t").onkeydown = (e) => { if (e.key === "Enter") submit(); };
+  document.querySelectorAll(".login input").forEach(i => {
+    i.onkeydown = (e) => { if (e.key === "Enter") submit(); };
+  });
+}
+
+async function logout() {
+  if (authMode === "userpass") {
+    try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch {}
+  } else {
+    sessionStorage.removeItem(TOKEN_KEY);
+  }
+  renderLogin();
 }
 
 function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
@@ -131,23 +169,17 @@ function renderDashboard(state) {
   document.querySelectorAll(".tab").forEach(el => {
     el.onclick = () => { activeTab = +el.dataset.idx; renderDashboard(state); };
   });
-  document.getElementById("logout").onclick = () => {
-    sessionStorage.removeItem(TOKEN_KEY);
-    renderLogin();
-  };
+  document.getElementById("logout").onclick = logout;
 }
 
 async function bootstrap() {
   try {
-    const req = await fetch("/api/auth-required").then(r => r.json()).catch(() => ({ required: false }));
-    if (req.required && !sessionStorage.getItem(TOKEN_KEY)) {
-      renderLogin();
-      return;
-    }
+    const req = await fetch("/api/auth-required").then(r => r.json()).catch(() => ({ required: false, mode: "none" }));
+    authMode = req.mode || "none";
     const state = await api("/api/state");
     renderDashboard(state);
   } catch (e) {
-    if (e.message === "unauthorized") renderLogin("Неверный токен");
+    if (e.message === "unauthorized") renderLogin(authMode === "userpass" ? null : "Неверный токен");
     else document.getElementById("app").innerHTML = `<main><p class="err">Ошибка: ${e.message}</p></main>`;
   }
 }

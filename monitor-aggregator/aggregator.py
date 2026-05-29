@@ -2,8 +2,10 @@
 """monitor-aggregator: опрашивает несколько server-monitor и сводит в один дашборд."""
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import secrets
 import socket
 import ssl
 import sys
@@ -21,6 +23,52 @@ STATE_PATH = Path(os.environ.get("AGGREGATOR_STATE", BASE_DIR / "state.json"))
 WEB_DIR = BASE_DIR / "web"
 
 FETCH_TIMEOUT = 8
+SESSION_TTL = 7 * 24 * 3600
+SESSION_COOKIE = "ma_session"
+
+_sessions: dict[str, float] = {}
+_sessions_lock = threading.Lock()
+
+
+def _new_session() -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _sessions_lock:
+        for k in [k for k, exp in _sessions.items() if exp < now]:
+            del _sessions[k]
+        _sessions[token] = now + SESSION_TTL
+    return token
+
+
+def _is_valid_session(token: str) -> bool:
+    if not token:
+        return False
+    with _sessions_lock:
+        exp = _sessions.get(token)
+        if exp is None:
+            return False
+        if exp < time.time():
+            del _sessions[token]
+            return False
+        return True
+
+
+def _drop_session(token: str) -> None:
+    if not token:
+        return
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+
+def _get_cookie(handler, name: str) -> str:
+    raw = handler.headers.get("Cookie", "")
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k == name:
+                return v
+    return ""
 
 
 def load_config() -> dict:
@@ -142,19 +190,33 @@ class Aggregator:
                 self.prev_reachable[name] = reachable
 
 
-def _is_authorized(handler: BaseHTTPRequestHandler, auth_cfg: dict) -> bool:
+def _auth_mode(auth_cfg: dict) -> str:
     if not auth_cfg.get("enabled"):
+        return "none"
+    if auth_cfg.get("username") and auth_cfg.get("password"):
+        return "userpass"
+    if auth_cfg.get("token"):
+        return "token"
+    return "none"
+
+
+def _is_authorized(handler: BaseHTTPRequestHandler, auth_cfg: dict) -> bool:
+    mode = _auth_mode(auth_cfg)
+    if mode == "none":
+        return True
+    if _is_valid_session(_get_cookie(handler, SESSION_COOKIE)):
         return True
     expected = auth_cfg.get("token") or ""
-    if not expected:
-        return True
-    hdr = handler.headers.get("Authorization", "")
-    if hdr.startswith("Bearer ") and hdr[7:] == expected:
-        return True
-    qs = urllib.parse.urlparse(handler.path).query
-    params = urllib.parse.parse_qs(qs)
-    token = (params.get("token") or [""])[0]
-    return token == expected
+    if expected:
+        hdr = handler.headers.get("Authorization", "")
+        if hdr.startswith("Bearer ") and hmac.compare_digest(hdr[7:], expected):
+            return True
+        qs = urllib.parse.urlparse(handler.path).query
+        params = urllib.parse.parse_qs(qs)
+        tok = (params.get("token") or [""])[0]
+        if tok and hmac.compare_digest(tok, expected):
+            return True
+    return False
 
 
 def make_handler(agg: Aggregator, config: dict):
@@ -194,7 +256,8 @@ def make_handler(agg: Aggregator, config: dict):
                 return
 
             if path == "/api/auth-required":
-                self._send_json(200, {"required": bool(auth_cfg.get("enabled") and auth_cfg.get("token"))})
+                mode = _auth_mode(auth_cfg)
+                self._send_json(200, {"required": mode != "none", "mode": mode})
                 return
 
             if path == "/api/state":
@@ -203,6 +266,60 @@ def make_handler(agg: Aggregator, config: dict):
                     return
                 with agg.lock:
                     self._send_json(200, agg.snapshot)
+                return
+
+            self.send_error(404)
+
+        def do_POST(self):
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+
+            if path == "/api/login":
+                if _auth_mode(auth_cfg) != "userpass":
+                    self._send_json(404, {"error": "login disabled"})
+                    return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(length) if length else b""
+                try:
+                    data = json.loads(body.decode("utf-8"))
+                except Exception:
+                    self._send_json(400, {"error": "bad json"})
+                    return
+                u = str(data.get("username", ""))
+                p = str(data.get("password", ""))
+                cfg_u = str(auth_cfg.get("username", ""))
+                cfg_p = str(auth_cfg.get("password", ""))
+                ok = (cfg_u and cfg_p
+                      and hmac.compare_digest(u, cfg_u)
+                      and hmac.compare_digest(p, cfg_p))
+                if not ok:
+                    self._send_json(401, {"error": "invalid credentials"})
+                    return
+                token = _new_session()
+                payload = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_TTL}",
+                )
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+
+            if path == "/api/logout":
+                _drop_session(_get_cookie(self, SESSION_COOKIE))
+                payload = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+                )
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
                 return
 
             self.send_error(404)
