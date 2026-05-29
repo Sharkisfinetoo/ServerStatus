@@ -2,6 +2,7 @@
 """server-monitor: проверки ping/TCP/HTTP, дашборд, Telegram-алерты."""
 from __future__ import annotations
 
+import collections
 import json
 import os
 import socket
@@ -19,11 +20,16 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("MONITOR_CONFIG", BASE_DIR / "config" / "servers.json"))
 STATE_PATH = Path(os.environ.get("MONITOR_STATE", BASE_DIR / "state.json"))
+METRICS_PATH = Path(os.environ.get("MONITOR_METRICS", BASE_DIR / "metrics.json"))
 WEB_DIR = BASE_DIR / "web"
 
 PING_TIMEOUT = 2
 TCP_TIMEOUT = 3
 HTTP_TIMEOUT = 5
+
+METRICS_INTERVAL = 30
+METRICS_MAXLEN = 2880  # 24h at 30s/point
+METRICS_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400}
 
 
 def load_config() -> dict:
@@ -218,6 +224,129 @@ class Poller:
         return ", ".join(parts) or "unknown"
 
 
+def _read_cpu_counters() -> tuple[int, int]:
+    with open("/proc/stat", "r") as fh:
+        parts = fh.readline().split()
+    vals = [int(x) for x in parts[1:]]
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    total = sum(vals)
+    return idle, total
+
+
+def _read_mem_percent() -> float:
+    info: dict[str, int] = {}
+    with open("/proc/meminfo", "r") as fh:
+        for line in fh:
+            k, _, rest = line.partition(":")
+            try:
+                info[k] = int(rest.strip().split()[0])
+            except (ValueError, IndexError):
+                continue
+    total = info.get("MemTotal", 0)
+    avail = info.get("MemAvailable", info.get("MemFree", 0))
+    if total <= 0:
+        return 0.0
+    return round(100.0 * (total - avail) / total, 1)
+
+
+def _read_net_counters() -> tuple[int, int]:
+    rx = tx = 0
+    try:
+        with open("/proc/net/dev", "r") as fh:
+            fh.readline()
+            fh.readline()
+            for line in fh:
+                iface, _, rest = line.partition(":")
+                iface = iface.strip()
+                if iface == "lo" or not rest:
+                    continue
+                fields = rest.split()
+                if len(fields) < 16:
+                    continue
+                rx += int(fields[0])
+                tx += int(fields[8])
+    except FileNotFoundError:
+        pass
+    return rx, tx
+
+
+class MetricsCollector:
+    def __init__(self, interval: int = METRICS_INTERVAL, maxlen: int = METRICS_MAXLEN):
+        self.interval = interval
+        self.points: collections.deque[dict] = collections.deque(maxlen=maxlen)
+        self.lock = threading.Lock()
+        self._prev_cpu: tuple[int, int] | None = None
+        self._prev_net: tuple[int, int] | None = None
+        self._prev_ts: float | None = None
+        if METRICS_PATH.exists():
+            try:
+                data = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+                for p in (data.get("points") or [])[-maxlen:]:
+                    self.points.append(p)
+                print(f"[metrics] loaded {len(self.points)} points from {METRICS_PATH}", file=sys.stderr)
+            except Exception as exc:
+                print(f"[metrics] load failed: {exc}", file=sys.stderr)
+
+    def run_forever(self) -> None:
+        while True:
+            try:
+                self._tick()
+            except Exception as exc:
+                print(f"[metrics] {exc}", file=sys.stderr)
+            time.sleep(self.interval)
+
+    def _tick(self) -> None:
+        now = time.time()
+        try:
+            cpu = _read_cpu_counters()
+            net = _read_net_counters()
+        except Exception as exc:
+            print(f"[metrics] read failed: {exc}", file=sys.stderr)
+            return
+
+        if self._prev_cpu is None or self._prev_ts is None:
+            self._prev_cpu = cpu
+            self._prev_net = net
+            self._prev_ts = now
+            return
+
+        dt = max(0.001, now - self._prev_ts)
+        idle_d = cpu[0] - self._prev_cpu[0]
+        total_d = cpu[1] - self._prev_cpu[1]
+        cpu_pct = 0.0 if total_d <= 0 else round(100.0 * (1.0 - idle_d / total_d), 1)
+        cpu_pct = max(0.0, min(100.0, cpu_pct))
+
+        rx_bps = max(0, int((net[0] - self._prev_net[0]) / dt))
+        tx_bps = max(0, int((net[1] - self._prev_net[1]) / dt))
+
+        point = {
+            "ts": int(now),
+            "cpu": cpu_pct,
+            "mem": _read_mem_percent(),
+            "rx": rx_bps,
+            "tx": tx_bps,
+        }
+        with self.lock:
+            self.points.append(point)
+            disk_snapshot = list(self.points)
+        try:
+            atomic_write_json(METRICS_PATH, {"points": disk_snapshot})
+        except Exception as exc:
+            print(f"[metrics] write failed: {exc}", file=sys.stderr)
+
+        self._prev_cpu = cpu
+        self._prev_net = net
+        self._prev_ts = now
+
+    def snapshot(self, range_s: int | None = None) -> list[dict]:
+        with self.lock:
+            pts = list(self.points)
+        if range_s is None:
+            return pts
+        cutoff = time.time() - range_s
+        return [p for p in pts if p["ts"] >= cutoff]
+
+
 def _is_authorized(handler: BaseHTTPRequestHandler, auth_cfg: dict) -> bool:
     if not auth_cfg.get("enabled"):
         return True
@@ -233,7 +362,7 @@ def _is_authorized(handler: BaseHTTPRequestHandler, auth_cfg: dict) -> bool:
     return token == expected
 
 
-def make_handler(poller: Poller, config: dict):
+def make_handler(poller: Poller, metrics: MetricsCollector, config: dict):
     auth_cfg = config.get("auth") or {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -281,6 +410,20 @@ def make_handler(poller: Poller, config: dict):
                     return
                 with poller.lock:
                     self._send_json(200, poller.snapshot)
+                return
+
+            if path == "/api/metrics":
+                if not _is_authorized(self, auth_cfg):
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                qs = urllib.parse.parse_qs(parsed.query)
+                range_str = (qs.get("range") or ["1h"])[0]
+                range_s = METRICS_RANGES.get(range_str, METRICS_RANGES["1h"])
+                self._send_json(200, {
+                    "range": range_str,
+                    "interval": metrics.interval,
+                    "points": metrics.snapshot(range_s),
+                })
                 return
 
             self.send_error(404)
@@ -339,12 +482,13 @@ def main() -> None:
         sys.exit(1)
     config = load_config()
     poller = Poller(config)
+    metrics = MetricsCollector()
 
-    t = threading.Thread(target=poller.run_forever, daemon=True)
-    t.start()
+    threading.Thread(target=poller.run_forever, daemon=True).start()
+    threading.Thread(target=metrics.run_forever, daemon=True).start()
 
     port = int(config.get("dashboard_port", 8888))
-    server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(poller, config))
+    server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(poller, metrics, config))
     print(f"server-monitor listening on http://0.0.0.0:{port}", flush=True)
     try:
         server.serve_forever()

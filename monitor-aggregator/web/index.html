@@ -50,6 +50,18 @@
   .adhoc-result.fail { background: #2a1518; color: #f5c2c7; border: 1px solid #58151c; }
   .adhoc-result .dot { vertical-align: middle; }
   .adhoc-loading { margin-top: 10px; color: #888; font-size: 13px; }
+  .metrics { margin-top: 24px; }
+  .metrics-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .metrics-header h2 { font-size: 14px; margin: 0; color: #aaa; font-weight: 600; }
+  .range-btns { display: flex; gap: 4px; }
+  .range-btns button { padding: 4px 10px; border-radius: 4px; background: #181a20; color: #aaa; border: 1px solid #262830; cursor: pointer; font-size: 12px; font-family: inherit; }
+  .range-btns button.active { background: #2f6feb; color: #fff; border-color: #2f6feb; }
+  .metrics-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .metric-box { background: #181a20; border: 1px solid #262830; border-radius: 8px; padding: 12px 14px; }
+  .metric-title { font-size: 12px; color: #888; display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .metric-current { color: #e6e6e6; font-weight: 600; font-size: 13px; }
+  .metric-box canvas { width: 100%; height: 80px; display: block; }
+  .metric-empty { color: #555; font-size: 12px; text-align: center; padding: 20px 0; }
 </style>
 </head>
 <body>
@@ -151,13 +163,172 @@ function instanceOk(inst) {
   return (inst.state?.servers || []).every(s => s.ok);
 }
 
+const RANGES = ["1h", "6h", "24h"];
+let metricsRange = "1h";
+const metricsCache = {}; // `${instance}|${range}` -> { fetchedAt, data }
+
 function renderInstanceContent(inst) {
   if (!inst.reachable) {
-    return `<div class="unreachable">⚠ ДЦ недоступен: ${inst.error || "unknown"}<div style="color:#888;font-size:12px;margin-top:4px">${inst.url}</div></div>`;
+    return `<div class="unreachable">⚠ ДЦ недоступен: ${escapeHtml(inst.error || "unknown")}<div style="color:#888;font-size:12px;margin-top:4px">${escapeHtml(inst.url)}</div></div>`;
   }
   const servers = inst.state?.servers || [];
-  if (servers.length === 0) return `<p style="color:#888">Серверы не настроены.</p>`;
-  return `<div class="grid">${servers.map(renderServer).join("")}</div>`;
+  const grid = servers.length ? `<div class="grid">${servers.map(renderServer).join("")}</div>` : `<p style="color:#888">Серверы не настроены.</p>`;
+  const ranges = RANGES.map(r => `<button data-range="${r}" class="${r === metricsRange ? "active" : ""}">${r === "1h" ? "1ч" : r === "6h" ? "6ч" : "24ч"}</button>`).join("");
+  const metrics = `
+    <div class="metrics" data-instance="${escapeHtml(inst.name)}">
+      <div class="metrics-header">
+        <h2>Метрики</h2>
+        <div class="range-btns">${ranges}</div>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric-box metric-cpu">
+          <div class="metric-title">CPU<span class="metric-current">—</span></div>
+          <canvas></canvas>
+        </div>
+        <div class="metric-box metric-ram">
+          <div class="metric-title">RAM<span class="metric-current">—</span></div>
+          <canvas></canvas>
+        </div>
+        <div class="metric-box metric-net">
+          <div class="metric-title">Net<span class="metric-current">—</span></div>
+          <canvas></canvas>
+        </div>
+      </div>
+    </div>`;
+  return grid + metrics;
+}
+
+function fmtBytes(b) {
+  if (!b || b < 0) return "0 B";
+  if (b < 1024) return b.toFixed(0) + " B";
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+  if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + " MB";
+  return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+async function fetchMetrics(instanceName) {
+  const key = `${instanceName}|${metricsRange}`;
+  const cached = metricsCache[key];
+  if (cached && Date.now() - cached.fetchedAt < 25000) return cached.data;
+  try {
+    const headers = {};
+    if (authMode === "token") {
+      const t = sessionStorage.getItem(TOKEN_KEY) || "";
+      if (t) headers.Authorization = "Bearer " + t;
+    }
+    const res = await fetch(`/api/metrics?instance=${encodeURIComponent(instanceName)}&range=${encodeURIComponent(metricsRange)}`,
+      { headers, credentials: "same-origin" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    metricsCache[key] = { fetchedAt: Date.now(), data };
+    return data;
+  } catch { return null; }
+}
+
+function drawSparkline(canvas, points, opts) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 280;
+  const h = canvas.clientHeight || 80;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!points || points.length < 2) {
+    ctx.fillStyle = "#555";
+    ctx.font = "12px sans-serif";
+    ctx.fillText("ждём первых точек…", 8, h / 2 + 4);
+    return;
+  }
+  const padX = 4, padY = 6;
+  const innerW = w - padX * 2;
+  const innerH = h - padY * 2;
+  const minTs = points[0].ts;
+  const maxTs = points[points.length - 1].ts;
+  const tsRange = Math.max(1, maxTs - minTs);
+
+  const allVals = [];
+  for (const p of points) { allVals.push(p.value0); if (p.value1 != null) allVals.push(p.value1); }
+  let yMin = opts.yMin != null ? opts.yMin : Math.min(...allVals);
+  let yMax = opts.yMax != null ? opts.yMax : Math.max(...allVals);
+  if (yMax === yMin) yMax = yMin + 1;
+
+  const xp = (ts) => padX + ((ts - minTs) / tsRange) * innerW;
+  const yp = (v) => padY + (1 - (v - yMin) / (yMax - yMin)) * innerH;
+
+  ctx.strokeStyle = "#262830";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padX, h - padY);
+  ctx.lineTo(w - padX, h - padY);
+  ctx.stroke();
+
+  const drawLine = (key, color, fill) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const v = p[key];
+      if (v == null) return;
+      const x = xp(p.ts);
+      const y = yp(v);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    if (fill) {
+      ctx.lineTo(xp(points[points.length - 1].ts), h - padY);
+      ctx.lineTo(xp(points[0].ts), h - padY);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  drawLine("value0", opts.color0, opts.fill0);
+  if (opts.color1) drawLine("value1", opts.color1, null);
+}
+
+async function renderMetricsFor(instanceName) {
+  const box = document.querySelector(`.metrics[data-instance="${CSS.escape(instanceName)}"]`);
+  if (!box) return;
+  const data = await fetchMetrics(instanceName);
+  if (!data) {
+    box.querySelector(".metric-cpu .metric-current").textContent = "—";
+    box.querySelector(".metric-ram .metric-current").textContent = "—";
+    box.querySelector(".metric-net .metric-current").textContent = "—";
+    for (const c of box.querySelectorAll("canvas")) drawSparkline(c, [], {});
+    return;
+  }
+  const points = data.points || [];
+  const last = points[points.length - 1] || {};
+
+  drawSparkline(box.querySelector(".metric-cpu canvas"),
+    points.map(p => ({ ts: p.ts, value0: p.cpu })),
+    { yMin: 0, yMax: 100, color0: "#57c785", fill0: "rgba(87,199,133,0.12)" });
+  box.querySelector(".metric-cpu .metric-current").textContent = last.cpu != null ? `${last.cpu}%` : "—";
+
+  drawSparkline(box.querySelector(".metric-ram canvas"),
+    points.map(p => ({ ts: p.ts, value0: p.mem })),
+    { yMin: 0, yMax: 100, color0: "#5b9af7", fill0: "rgba(91,154,247,0.12)" });
+  box.querySelector(".metric-ram .metric-current").textContent = last.mem != null ? `${last.mem}%` : "—";
+
+  drawSparkline(box.querySelector(".metric-net canvas"),
+    points.map(p => ({ ts: p.ts, value0: p.rx, value1: p.tx })),
+    { yMin: 0, color0: "#5b9af7", color1: "#e8a857" });
+  box.querySelector(".metric-net .metric-current").innerHTML =
+    `<span style="color:#5b9af7">↓${escapeHtml(fmtBytes(last.rx || 0))}/s</span> · <span style="color:#e8a857">↑${escapeHtml(fmtBytes(last.tx || 0))}/s</span>`;
+}
+
+function wireMetricsControls(instanceName) {
+  const box = document.querySelector(`.metrics[data-instance="${CSS.escape(instanceName)}"]`);
+  if (!box) return;
+  box.querySelectorAll(".range-btns button").forEach(b => {
+    b.onclick = () => {
+      metricsRange = b.dataset.range;
+      box.querySelectorAll(".range-btns button").forEach(x => x.classList.toggle("active", x === b));
+      renderMetricsFor(instanceName);
+    };
+  });
 }
 
 let lastState = null;
@@ -225,6 +396,12 @@ function renderDashboard(state) {
 
   document.getElementById("content").innerHTML =
     instances[activeTab] ? renderInstanceContent(instances[activeTab]) : "<p>Нет данных.</p>";
+
+  const current = instances[activeTab];
+  if (current && current.reachable) {
+    wireMetricsControls(current.name);
+    renderMetricsFor(current.name);
+  }
 }
 
 function escapeHtml(s) {
