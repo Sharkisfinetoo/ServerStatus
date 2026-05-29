@@ -38,6 +38,18 @@
   .login button { width: 100%; margin-top: 12px; padding: 10px; border-radius: 6px; border: 0; background: #2f6feb; color: #fff; font-size: 14px; cursor: pointer; }
   .err { color: #e06c75; font-size: 13px; margin-top: 8px; }
   .logout { background: transparent; border: 1px solid #333; color: #aaa; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  .adhoc { padding: 12px 24px; border-bottom: 1px solid #222; background: #141519; }
+  .adhoc-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .adhoc-form select, .adhoc-form input, .adhoc-form button { padding: 7px 10px; border-radius: 6px; background: #0f1115; color: #e6e6e6; border: 1px solid #333; font-size: 13px; font-family: inherit; }
+  .adhoc-form input { flex: 1; min-width: 220px; }
+  .adhoc-form button { background: #2f6feb; border: 0; cursor: pointer; padding-left: 14px; padding-right: 14px; }
+  .adhoc-form button:disabled { opacity: 0.6; cursor: wait; }
+  .adhoc-form label { color: #888; font-size: 12px; }
+  .adhoc-result { margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 13px; word-break: break-all; }
+  .adhoc-result.ok { background: #17321f; color: #d1f1d8; border: 1px solid #1f5132; }
+  .adhoc-result.fail { background: #2a1518; color: #f5c2c7; border: 1px solid #58151c; }
+  .adhoc-result .dot { vertical-align: middle; }
+  .adhoc-loading { margin-top: 10px; color: #888; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -60,6 +72,7 @@ async function api(path) {
 }
 
 function renderLogin(err) {
+  shellBuilt = false;
   const isUserpass = authMode === "userpass";
   const fields = isUserpass
     ? `<input id="u" placeholder="логин" autofocus>
@@ -146,30 +159,121 @@ function renderInstanceContent(inst) {
   return `<div class="grid">${servers.map(renderServer).join("")}</div>`;
 }
 
-function renderDashboard(state) {
-  const instances = state.instances || [];
-  if (activeTab >= instances.length) activeTab = 0;
-  const tabs = instances.map((inst, i) => `
-    <div class="tab ${i === activeTab ? "active" : ""}" data-idx="${i}">
-      <span class="dot ${instanceOk(inst) ? "ok" : "fail"}"></span>${inst.name}
-    </div>`).join("");
-  const content = instances[activeTab] ? renderInstanceContent(instances[activeTab]) : "<p>Нет данных.</p>";
+let lastState = null;
+let shellBuilt = false;
 
+function buildShell() {
   document.getElementById("app").innerHTML = `
     <header>
       <div>
         <h1>monitor-aggregator</h1>
-        <div class="meta">Обновлено: ${fmtTime(state.generated_at)} · интервал ${state.interval}s · ДЦ: ${instances.length}</div>
+        <div class="meta" id="meta"></div>
       </div>
       <button class="logout" id="logout">Выйти</button>
     </header>
-    <div class="tabs">${tabs}</div>
-    <main>${content}</main>`;
-
-  document.querySelectorAll(".tab").forEach(el => {
-    el.onclick = () => { activeTab = +el.dataset.idx; renderDashboard(state); };
-  });
+    <div class="adhoc">
+      <div class="adhoc-form">
+        <label>откуда:</label>
+        <select id="adhoc-instance"></select>
+        <label>тип:</label>
+        <select id="adhoc-type">
+          <option value="ping">ping</option>
+          <option value="tcp">tcp host:port</option>
+          <option value="http">http(s) URL</option>
+        </select>
+        <input id="adhoc-target" placeholder="host, host:port или URL">
+        <button id="adhoc-go">Проверить</button>
+      </div>
+      <div id="adhoc-result"></div>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <main id="content"></main>`;
   document.getElementById("logout").onclick = logout;
+  document.getElementById("adhoc-go").onclick = runAdhocCheck;
+  document.getElementById("adhoc-target").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runAdhocCheck();
+  });
+}
+
+function renderDashboard(state) {
+  lastState = state;
+  if (!shellBuilt) { buildShell(); shellBuilt = true; }
+
+  const instances = state.instances || [];
+  if (activeTab >= instances.length) activeTab = 0;
+
+  document.getElementById("meta").textContent =
+    `Обновлено: ${fmtTime(state.generated_at)} · интервал ${state.interval}s · ДЦ: ${instances.length}`;
+
+  const sel = document.getElementById("adhoc-instance");
+  const prev = sel.value;
+  sel.innerHTML = instances.map(i => `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)}</option>`).join("");
+  if (prev && instances.some(i => i.name === prev)) sel.value = prev;
+  else if (instances[activeTab]) sel.value = instances[activeTab].name;
+
+  const tabsDiv = document.getElementById("tabs");
+  tabsDiv.innerHTML = instances.map((inst, i) => `
+    <div class="tab ${i === activeTab ? "active" : ""}" data-idx="${i}">
+      <span class="dot ${instanceOk(inst) ? "ok" : "fail"}"></span>${escapeHtml(inst.name)}
+    </div>`).join("");
+  tabsDiv.querySelectorAll(".tab").forEach(el => {
+    el.onclick = () => { activeTab = +el.dataset.idx; renderDashboard(lastState); };
+  });
+
+  document.getElementById("content").innerHTML =
+    instances[activeTab] ? renderInstanceContent(instances[activeTab]) : "<p>Нет данных.</p>";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function runAdhocCheck() {
+  const instance = document.getElementById("adhoc-instance").value;
+  const type = document.getElementById("adhoc-type").value;
+  const target = document.getElementById("adhoc-target").value.trim();
+  const result = document.getElementById("adhoc-result");
+  const btn = document.getElementById("adhoc-go");
+  if (!target) { result.innerHTML = `<div class="adhoc-result fail">Введите цель.</div>`; return; }
+  result.innerHTML = `<div class="adhoc-loading">Проверяю…</div>`;
+  btn.disabled = true;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (authMode === "token") {
+      const t = sessionStorage.getItem(TOKEN_KEY) || "";
+      if (t) headers.Authorization = "Bearer " + t;
+    }
+    const res = await fetch("/api/check", {
+      method: "POST", headers, credentials: "same-origin",
+      body: JSON.stringify({ instance, type, target }),
+    });
+    if (res.status === 401) { result.innerHTML = ""; renderLogin("Сессия истекла"); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      result.innerHTML = `<div class="adhoc-result fail">Ошибка: ${escapeHtml(data.error || ("HTTP " + res.status))}</div>`;
+      return;
+    }
+    result.innerHTML = renderAdhocResult(data);
+  } catch (e) {
+    result.innerHTML = `<div class="adhoc-result fail">Сеть: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderAdhocResult(data) {
+  const r = data.result || {};
+  const ok = !!r.ok;
+  const dot = `<span class="dot ${ok ? "ok" : "fail"}"></span>`;
+  let detail = "";
+  if (data.type === "ping" || data.type === "tcp") {
+    detail = ok ? `${r.latency_ms} ms` : (r.error || "fail");
+  } else if (data.type === "http") {
+    detail = ok ? `code ${r.code} · ${r.latency_ms} ms` : `code ${r.code ?? "?"} · ${r.error || "fail"}`;
+  } else {
+    detail = JSON.stringify(r);
+  }
+  return `<div class="adhoc-result ${ok ? "ok" : "fail"}">${dot} <b>${escapeHtml(data.type)}</b> ${escapeHtml(data.target)} — ${escapeHtml(detail)}</div>`;
 }
 
 async function bootstrap() {

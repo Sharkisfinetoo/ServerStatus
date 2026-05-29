@@ -287,6 +287,49 @@ def make_handler(poller: Poller, config: dict):
 
         do_HEAD = do_GET
 
+        def do_POST(self):
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/api/check":
+                self.send_error(404)
+                return
+            if not _is_authorized(self, auth_cfg):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b""
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except Exception:
+                self._send_json(400, {"error": "bad json"})
+                return
+            ctype = str(data.get("type", "")).lower()
+            target = str(data.get("target", "")).strip()
+            if not target:
+                self._send_json(400, {"error": "target required"})
+                return
+            try:
+                if ctype == "ping":
+                    result = check_ping(target)
+                elif ctype == "tcp":
+                    host, _, port_s = target.rpartition(":")
+                    if not host or not port_s.isdigit():
+                        self._send_json(400, {"error": "tcp target must be host:port"})
+                        return
+                    result = check_tcp(host, int(port_s))
+                elif ctype == "http":
+                    if "://" not in target:
+                        target = "http://" + target
+                    expected_code = int(data.get("expected_code") or 200)
+                    keyword = data.get("keyword") or None
+                    result = check_http(target, expected_code, keyword)
+                else:
+                    self._send_json(400, {"error": "type must be ping|tcp|http"})
+                    return
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+                return
+            self._send_json(200, {"type": ctype, "target": target, "result": result})
+
     return Handler
 
 

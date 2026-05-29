@@ -326,6 +326,53 @@ def make_handler(agg: Aggregator, config: dict):
                 self.wfile.write(payload)
                 return
 
+            if path == "/api/check":
+                if not _is_authorized(self, auth_cfg):
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    self._send_json(400, {"error": "bad json"})
+                    return
+                inst_name = str(data.get("instance", ""))
+                inst = next((i for i in agg.config.get("instances", []) if i.get("name") == inst_name), None)
+                if not inst:
+                    self._send_json(400, {"error": "instance not found"})
+                    return
+                base = inst["url"].rsplit("/", 1)[0]
+                check_url = base + "/check"
+                fwd_payload = json.dumps({
+                    "type": data.get("type"),
+                    "target": data.get("target"),
+                    "expected_code": data.get("expected_code"),
+                    "keyword": data.get("keyword"),
+                }).encode("utf-8")
+                req = urllib.request.Request(check_url, data=fwd_payload, method="POST",
+                                             headers={"Content-Type": "application/json",
+                                                      "User-Agent": "monitor-aggregator/1.0"})
+                token = agg.config.get("instances_auth_token", "")
+                if token:
+                    req.add_header("Authorization", f"Bearer {token}")
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                try:
+                    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT, context=ctx) as resp:
+                        body_bytes = resp.read()
+                    self._send_json(200, json.loads(body_bytes.decode("utf-8")))
+                except urllib.error.HTTPError as exc:
+                    try:
+                        err_body = json.loads(exc.read().decode("utf-8"))
+                    except Exception:
+                        err_body = {"error": str(exc)}
+                    self._send_json(exc.code, err_body)
+                except Exception as exc:
+                    self._send_json(502, {"error": f"instance unreachable: {exc}"})
+                return
+
             self.send_error(404)
 
     return Handler
