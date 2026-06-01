@@ -61,6 +61,10 @@
   .metric-title { font-size: 12px; color: #888; display: flex; justify-content: space-between; margin-bottom: 6px; }
   .metric-current { color: #e6e6e6; font-weight: 600; font-size: 13px; }
   .metric-box canvas { width: 100%; height: 80px; display: block; }
+  .metric-canvas-wrap { position: relative; }
+  .metric-axis { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-top: 4px; }
+  .metric-tip { position: absolute; background: #0f1115; border: 1px solid #333; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #ddd; pointer-events: none; display: none; white-space: nowrap; z-index: 5; line-height: 1.4; }
+  .metric-tip b { color: #fff; }
   .metric-empty { color: #555; font-size: 12px; text-align: center; padding: 20px 0; }
 </style>
 </head>
@@ -183,19 +187,71 @@ function renderInstanceContent(inst) {
       <div class="metrics-grid">
         <div class="metric-box metric-cpu">
           <div class="metric-title">CPU<span class="metric-current">—</span></div>
-          <canvas></canvas>
+          <div class="metric-canvas-wrap"><canvas></canvas><div class="metric-tip"></div></div>
+          <div class="metric-axis"><span class="start"></span><span class="end"></span></div>
         </div>
         <div class="metric-box metric-ram">
           <div class="metric-title">RAM<span class="metric-current">—</span></div>
-          <canvas></canvas>
+          <div class="metric-canvas-wrap"><canvas></canvas><div class="metric-tip"></div></div>
+          <div class="metric-axis"><span class="start"></span><span class="end"></span></div>
         </div>
         <div class="metric-box metric-net">
           <div class="metric-title">Net<span class="metric-current">—</span></div>
-          <canvas></canvas>
+          <div class="metric-canvas-wrap"><canvas></canvas><div class="metric-tip"></div></div>
+          <div class="metric-axis"><span class="start"></span><span class="end"></span></div>
         </div>
       </div>
     </div>`;
   return grid + metrics;
+}
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function fmtAxisTime(ts, range) {
+  const d = new Date(ts * 1000);
+  if (range === "24h") {
+    return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function fmtTipTime(ts) {
+  const d = new Date(ts * 1000);
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function attachHover(box, points, formatter) {
+  const canvas = box.querySelector("canvas");
+  const tip = box.querySelector(".metric-tip");
+  if (!canvas || !tip) return;
+  if (!points || points.length < 2) {
+    canvas.onmousemove = null;
+    canvas.onmouseleave = null;
+    tip.style.display = "none";
+    return;
+  }
+  const minTs = points[0].ts;
+  const maxTs = points[points.length - 1].ts;
+  const tsRange = Math.max(1, maxTs - minTs);
+  canvas.style.cursor = "crosshair";
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const w = canvas.clientWidth;
+    const ts = minTs + Math.max(0, Math.min(1, x / w)) * tsRange;
+    let best = points[0], bestDist = Math.abs(best.ts - ts);
+    for (const p of points) {
+      const d = Math.abs(p.ts - ts);
+      if (d < bestDist) { best = p; bestDist = d; }
+    }
+    tip.innerHTML = formatter(best);
+    tip.style.display = "block";
+    const tipW = tip.offsetWidth || 120;
+    const left = Math.max(0, Math.min(w - tipW - 4, x + 8));
+    tip.style.left = left + "px";
+    tip.style.top = "4px";
+  };
+  canvas.onmouseleave = () => { tip.style.display = "none"; };
 }
 
 function fmtBytes(b) {
@@ -302,21 +358,42 @@ async function renderMetricsFor(instanceName) {
   const points = data.points || [];
   const last = points[points.length - 1] || {};
 
+  const setAxis = (selector) => {
+    const ax = box.querySelector(selector + " .metric-axis");
+    if (!ax) return;
+    if (points.length >= 2) {
+      ax.querySelector(".start").textContent = fmtAxisTime(points[0].ts, data.range);
+      ax.querySelector(".end").textContent = fmtAxisTime(points[points.length - 1].ts, data.range);
+    } else {
+      ax.querySelector(".start").textContent = "";
+      ax.querySelector(".end").textContent = "";
+    }
+  };
+
   drawSparkline(box.querySelector(".metric-cpu canvas"),
     points.map(p => ({ ts: p.ts, value0: p.cpu })),
     { yMin: 0, yMax: 100, color0: "#57c785", fill0: "rgba(87,199,133,0.12)" });
   box.querySelector(".metric-cpu .metric-current").textContent = last.cpu != null ? `${last.cpu}%` : "—";
+  setAxis(".metric-cpu");
+  attachHover(box.querySelector(".metric-cpu"), points,
+    p => `<b>${escapeHtml(fmtTipTime(p.ts))}</b><br>CPU: ${p.cpu}%`);
 
   drawSparkline(box.querySelector(".metric-ram canvas"),
     points.map(p => ({ ts: p.ts, value0: p.mem })),
     { yMin: 0, yMax: 100, color0: "#5b9af7", fill0: "rgba(91,154,247,0.12)" });
   box.querySelector(".metric-ram .metric-current").textContent = last.mem != null ? `${last.mem}%` : "—";
+  setAxis(".metric-ram");
+  attachHover(box.querySelector(".metric-ram"), points,
+    p => `<b>${escapeHtml(fmtTipTime(p.ts))}</b><br>RAM: ${p.mem}%`);
 
   drawSparkline(box.querySelector(".metric-net canvas"),
     points.map(p => ({ ts: p.ts, value0: p.rx, value1: p.tx })),
     { yMin: 0, color0: "#5b9af7", color1: "#e8a857" });
   box.querySelector(".metric-net .metric-current").innerHTML =
     `<span style="color:#5b9af7">↓${escapeHtml(fmtBytes(last.rx || 0))}/s</span> · <span style="color:#e8a857">↑${escapeHtml(fmtBytes(last.tx || 0))}/s</span>`;
+  setAxis(".metric-net");
+  attachHover(box.querySelector(".metric-net"), points,
+    p => `<b>${escapeHtml(fmtTipTime(p.ts))}</b><br><span style="color:#5b9af7">↓ ${escapeHtml(fmtBytes(p.rx || 0))}/s</span><br><span style="color:#e8a857">↑ ${escapeHtml(fmtBytes(p.tx || 0))}/s</span>`);
 }
 
 function wireMetricsControls(instanceName) {
