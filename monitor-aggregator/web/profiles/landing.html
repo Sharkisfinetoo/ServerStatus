@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Подключение к VPN — __SERVER_TITLE__</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f1115; color: #e6e6e6; line-height: 1.5; }
+  header { padding: 20px 24px; border-bottom: 1px solid #222; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .meta { color: #8a8a8a; font-size: 13px; margin-top: 4px; }
+  main { padding: 24px; max-width: 720px; margin: 0 auto; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px 0; color: #fff; }
+  h3 { font-size: 14px; font-weight: 600; margin: 16px 0 6px 0; color: #e6e6e6; }
+  p { margin: 0 0 10px 0; color: #cfcfcf; font-size: 14px; }
+  .card { background: #181a20; border: 1px solid #262830; border-radius: 8px; padding: 16px 18px; }
+
+  /* --- скачивание --- */
+  .download-form { display: flex; gap: 8px; flex-wrap: wrap; }
+  .download-form input { flex: 1; min-width: 200px; padding: 10px 12px; border-radius: 6px; border: 1px solid #333; background: #0f1115; color: #e6e6e6; font-size: 14px; font-family: inherit; }
+  .download-form button { padding: 10px 18px; border-radius: 6px; border: 0; background: #2f6feb; color: #fff; font-size: 14px; cursor: pointer; font-family: inherit; }
+  .download-form button:disabled { opacity: 0.6; cursor: wait; }
+  .hint { color: #8a8a8a; font-size: 12px; margin-top: 8px; }
+  .result { margin-top: 14px; display: none; }
+  .result.show { display: block; }
+  .result.error { color: #f5c2c7; background: #2a1518; border: 1px solid #58151c; border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+  .links { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .links a.dl { display: block; text-align: center; padding: 12px 14px; border-radius: 6px; background: #17321f; border: 1px solid #1f5132; color: #d1f1d8; text-decoration: none; font-size: 14px; font-weight: 600; }
+  .links a.dl:hover { border-color: #57c785; }
+  .links .missing { padding: 12px 14px; border-radius: 6px; background: #181a20; border: 1px solid #262830; color: #666; font-size: 13px; text-align: center; }
+  .warn { margin-top: 10px; color: #e0b34d; font-size: 12px; }
+
+  /* --- сравнение профилей --- */
+  .compare { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .compare .card .tag { font-size: 11px; font-weight: 600; letter-spacing: .03em; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+  .compare .card.rec .tag { background: #1f5132; color: #d1f1d8; }
+  .compare .card.alt .tag { background: #333; color: #ccc; }
+  .compare ul { margin: 6px 0 0 0; padding-left: 18px; font-size: 13px; color: #cfcfcf; }
+  .compare li { margin-bottom: 3px; }
+
+  /* --- табы по ОС --- */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tabbtn { padding: 7px 14px; border-radius: 6px; background: #181a20; border: 1px solid #262830; color: #aaa; font-size: 13px; cursor: pointer; font-family: inherit; }
+  .tabbtn.active { background: #2f6feb; color: #fff; border-color: #2f6feb; }
+  .tabpanel { display: none; }
+  .tabpanel.active { display: block; }
+  ol { margin: 0; padding-left: 20px; font-size: 14px; color: #cfcfcf; }
+  ol li { margin-bottom: 8px; }
+  code { background: #0f1115; border: 1px solid #262830; border-radius: 4px; padding: 1px 6px; font-size: 13px; }
+  pre { background: #0f1115; border: 1px solid #262830; border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 13px; }
+  .note { margin-top: 10px; padding: 10px 12px; background: #141519; border-left: 3px solid #2f6feb; border-radius: 4px; font-size: 13px; color: #cfcfcf; }
+
+  /* --- таблица неполадок --- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #262830; vertical-align: top; }
+  th { color: #8a8a8a; font-weight: 600; font-size: 12px; }
+  td { color: #cfcfcf; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Подключение к VPN</h1>
+  <div class="meta">__SERVER_TITLE__ · пошаговая инструкция для iPhone, Android, Windows, macOS и Linux</div>
+</header>
+
+<main>
+
+  <section id="download">
+    <h2>1. Скачать свой профиль</h2>
+    <div class="card">
+      <p>Введите имя профиля, которое вам сообщил администратор.</p>
+      <div class="download-form">
+        <input id="profile-name" type="text" placeholder="имя профиля" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+        <button id="dl-btn">Получить ссылки</button>
+      </div>
+      <div class="hint">Ссылки одноразовые и действуют ограниченное время — если не успели скачать, запросите заново.</div>
+      <div id="result" class="result"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Какой профиль выбрать</h2>
+    <p>Профилей два, они отличаются тем, какой трафик уходит через VPN. Рекомендуем добавить в приложение оба — они не мешают друг другу, но одновременно работает только один.</p>
+    <div class="compare">
+      <div class="card rec">
+        <span class="tag">РЕКОМЕНДУЕТСЯ</span>
+        <h3>AntiZapret</h3>
+        <p>«Умный» режим: через VPN идут только заблокированные сайты и сервисы, всё остальное открывается напрямую, как обычно.</p>
+        <ul>
+          <li>Выше скорость — обычные сайты грузятся напрямую</li>
+          <li>Банки, госуслуги и локальные сервисы работают как обычно</li>
+          <li>Сайты видят вашу настоящую страну</li>
+          <li>Минус: если сайт заблокирован «нестандартно», он может не открыться</li>
+        </ul>
+      </div>
+      <div class="card alt">
+        <span class="tag">ДЛЯ ОСОБЫХ СЛУЧАЕВ</span>
+        <h3>VPN (полный)</h3>
+        <p>Весь интернет-трафик идёт через сервер VPN, независимо от адреса назначения.</p>
+        <ul>
+          <li>Работает с любым сайтом и приложением</li>
+          <li>Провайдер не видит, какие сайты вы открываете</li>
+          <li>Минус: скорость обычно ниже, российские сервисы (банки, госуслуги) могут не работать</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">На практике: повседневно держите включённым <strong>AntiZapret</strong>. Если какой-то сайт не открывается — выключите его и включите <strong>VPN</strong>.</div>
+  </section>
+
+  <section>
+    <h2>3. Установка</h2>
+    <div class="tabs">
+      <button class="tabbtn active" data-tab="ios">iPhone / iPad</button>
+      <button class="tabbtn" data-tab="android">Android</button>
+      <button class="tabbtn" data-tab="windows">Windows</button>
+      <button class="tabbtn" data-tab="macos">macOS</button>
+      <button class="tabbtn" data-tab="linux">Linux</button>
+    </div>
+
+    <div class="tabpanel active" data-panel="ios">
+      <ol>
+        <li>Установите из App Store приложение <strong>OpenVPN Connect</strong> (значок — оранжевый щит).</li>
+        <li>Сохраните оба файла профиля на устройство: после скачивания нажмите «Поделиться» → «Сохранить в Файлы».</li>
+        <li>Откройте приложение <strong>Файлы</strong>, нажмите на файл <code>.ovpn</code> и выберите «Поделиться» → OpenVPN.</li>
+        <li>В открывшемся приложении нажмите <strong>ADD</strong> (или IMPORT).</li>
+        <li>Если запрашивается логин и пароль — введите их и включите переключатель Save password.</li>
+        <li>iOS попросит разрешение на добавление конфигурации VPN — нажмите Allow и подтвердите код-паролем или Face ID.</li>
+        <li>Повторите шаги 3–5 для второго профиля.</li>
+        <li>Для подключения включите переключатель рядом с нужным профилем. Вверху экрана появится значок VPN.</li>
+      </ol>
+    </div>
+
+    <div class="tabpanel" data-panel="android">
+      <ol>
+        <li>Установите из Google Play приложение <strong>OpenVPN Connect</strong>.</li>
+        <li>Скачайте оба файла профиля — обычно они попадают в папку «Загрузки».</li>
+        <li>Откройте приложение, перейдите на вкладку FILE и нажмите BROWSE. Разрешите доступ к файлам, если система спросит.</li>
+        <li>Выберите файл <code>.ovpn</code> и нажмите IMPORT.</li>
+        <li>Введите логин и пароль, если требуются, отметьте Save password.</li>
+        <li>На запрос «Разрешить создание VPN-подключения?» нажмите OK.</li>
+        <li>Повторите шаги 3–5 для второго профиля.</li>
+        <li>Включите переключатель профиля — в строке состояния появится значок ключа.</li>
+      </ol>
+      <div class="note">Чтобы связь не обрывалась: «Настройки → Приложения → OpenVPN → Батарея» → «Без ограничений».</div>
+    </div>
+
+    <div class="tabpanel" data-panel="windows">
+      <ol>
+        <li>Откройте <code>openvpn.net/client</code> и скачайте OpenVPN Connect для Windows.</li>
+        <li>Установите программу, запустите её и примите условия использования.</li>
+        <li>На вкладке FILE перетащите файл <code>.ovpn</code> в окно программы (или через кнопку BROWSE).</li>
+        <li>Нажмите CONNECT, при необходимости введите логин и пароль.</li>
+        <li>Добавьте так же второй профиль — оба будут в списке, переключаться можно одним кликом.</li>
+        <li>Значок программы в правом нижнем углу станет зелёным, когда подключение установлено.</li>
+      </ol>
+      <div class="note">Если подключение обрывается через несколько секунд — закройте программу и запустите правым кликом → «Запуск от имени администратора».</div>
+    </div>
+
+    <div class="tabpanel" data-panel="macos">
+      <ol>
+        <li>Скачайте OpenVPN Connect с <code>openvpn.net/client</code> и перетащите в «Программы».</li>
+        <li>Запустите его и разрешите системное расширение: «Системные настройки» → «Конфиденциальность и безопасность» → Разрешить.</li>
+        <li>На вкладке FILE перетащите файл <code>.ovpn</code> в окно программы.</li>
+        <li>Нажмите CONNECT и подтвердите паролем от учётной записи Mac.</li>
+        <li>Добавьте второй профиль тем же способом. Управлять подключением можно через значок в верхней строке меню.</li>
+      </ol>
+    </div>
+
+    <div class="tabpanel" data-panel="linux">
+      <p>В графическом интерфейсе: «Настройки» → «Сеть» → VPN → «+» → «Импортировать из файла…» → выберите <code>.ovpn</code>.</p>
+      <p>Через терминал:</p>
+      <pre>sudo apt install openvpn
+sudo openvpn --config /путь/к/profile.ovpn</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. Проверка</h2>
+    <p>Откройте сайт <code>2ip.ru</code>. При включённом профиле <strong>VPN</strong> там будет показан адрес и страна сервера, а не вашего провайдера. При включённом <strong>AntiZapret</strong> адрес останется вашим — это нормально, режим работает правильно; проверять его нужно по доступности заблокированного сайта.</p>
+  </section>
+
+  <section>
+    <h2>5. Если что-то не работает</h2>
+    <div class="card">
+      <table>
+        <tr><th>Что вы видите</th><th>Что делать</th></tr>
+        <tr><td>Ошибка AUTH_FAILED</td><td>Неверный логин/пароль либо истёк срок действия профиля — запросите новый файл у администратора.</td></tr>
+        <tr><td>Connecting / TLS handshake failed</td><td>Сеть блокирует соединение. Попробуйте мобильный интернет вместо Wi-Fi.</td></tr>
+        <tr><td>Подключение есть, но сайты не открываются</td><td>Проблема с DNS — включите DNS Fallback в настройках OpenVPN Connect. На Windows запустите программу от администратора.</td></tr>
+        <tr><td>Не открывается конкретный сайт или приложение</td><td>Переключитесь с AntiZapret на VPN — он пропускает через сервер весь трафик.</td></tr>
+        <tr><td>Не работают банк, госуслуги, доставка</td><td>Наоборот: переключитесь с VPN на AntiZapret либо временно отключите VPN.</td></tr>
+        <tr><td>На телефоне соединение обрывается само</td><td>Снимите ограничения энергосбережения для приложения OpenVPN.</td></tr>
+        <tr><td>Профиль вообще не подключается</td><td>Убедитесь, что не включён другой VPN и не активен второй профиль — одновременно работает только один.</td></tr>
+      </table>
+      <p style="margin-top:10px">Если ничего не помогло — отправьте администратору журнал подключения (в OpenVPN Connect: значок статистики в правом верхнем углу → «Share»/«Поделиться»).</p>
+    </div>
+  </section>
+
+</main>
+
+<script>
+const SERVER_ID = "__SERVER_ID__";
+
+document.querySelectorAll(".tabbtn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabbtn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tabpanel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelector(`.tabpanel[data-panel="${btn.dataset.tab}"]`).classList.add("active");
+  });
+});
+
+const btn = document.getElementById("dl-btn");
+const input = document.getElementById("profile-name");
+const result = document.getElementById("result");
+
+function showError(msg) {
+  result.className = "result show";
+  result.innerHTML = `<div class="error">${msg}</div>`;
+}
+
+function showLinks(data) {
+  result.className = "result show";
+  const az = data.antizapret_url
+    ? `<a class="dl" href="${data.antizapret_url}">Скачать AntiZapret</a>`
+    : `<div class="missing">AntiZapret профиль не найден</div>`;
+  const vpn = data.vpn_url
+    ? `<a class="dl" href="${data.vpn_url}">Скачать VPN (полный)</a>`
+    : `<div class="missing">VPN профиль не найден</div>`;
+  result.innerHTML = `<div class="links">${az}${vpn}</div><div class="warn">Каждая ссылка одноразовая — откройте и сразу скачайте файл.</div>`;
+}
+
+async function requestLinks() {
+  const name = input.value.trim();
+  if (!name) {
+    showError("Введите имя профиля.");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Запрашиваю…";
+  result.className = "result";
+  try {
+    const res = await fetch(`/profiles/${encodeURIComponent(SERVER_ID)}/api/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+      credentials: "same-origin",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      showError(data.message || "Слишком много попыток. Подождите немного и попробуйте снова.");
+    } else if (res.status === 404) {
+      showError("Профиль с таким именем не найден. Проверьте имя у администратора.");
+    } else if (!res.ok || !data.success) {
+      showError(data.message || "Не удалось получить ссылки. Попробуйте позже.");
+    } else {
+      showLinks(data);
+    }
+  } catch (e) {
+    showError("Ошибка сети: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Получить ссылки";
+  }
+}
+
+btn.addEventListener("click", requestLinks);
+input.addEventListener("keydown", e => { if (e.key === "Enter") requestLinks(); });
+</script>
+</body>
+</html>
