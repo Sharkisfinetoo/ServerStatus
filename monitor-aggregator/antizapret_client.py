@@ -20,8 +20,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CSRF_RE = re.compile(r'name="csrf_token"\s+value="([^"]*)"')
+CSRF_INPUT_RE = re.compile(r'<input\b[^>]*\bname="csrf_token"[^>]*>', re.IGNORECASE)
+CSRF_VALUE_RE = re.compile(r'\bvalue="([^"]*)"')
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _extract_csrf_token(html: str) -> str | None:
+    """Достаёт value из <input name="csrf_token" ...> независимо от порядка атрибутов."""
+    tag_match = CSRF_INPUT_RE.search(html)
+    if not tag_match:
+        return None
+    value_match = CSRF_VALUE_RE.search(tag_match.group(0))
+    return value_match.group(1) if value_match else None
 
 
 class ProfileNotFound(Exception):
@@ -77,11 +87,11 @@ class AntizapretClient:
     def _login(self) -> None:
         resp = self._open("GET", "/login")
         html = resp.read().decode("utf-8", "replace")
-        m = CSRF_RE.search(html)
-        if not m:
+        csrf_token = _extract_csrf_token(html)
+        if not csrf_token:
             raise AntizapretError("не удалось получить csrf_token со страницы логина панели")
         resp = self._open("POST", "/login", data={
-            "csrf_token": m.group(1),
+            "csrf_token": csrf_token,
             "username": self.username,
             "password": self.password,
             "remember_me": "1",
