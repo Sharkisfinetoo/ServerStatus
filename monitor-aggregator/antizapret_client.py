@@ -55,6 +55,11 @@ class AntizapretClient:
         self.password = server_cfg["admin_password"]
         self.verify_tls = server_cfg.get("verify_tls", True)
         self.timeout = timeout
+        # Некоторые деплои AdminAntizapret дописывают в имя файла хост панели,
+        # например antizapret-<name>-(vpn1.example.com).ovpn. По умолчанию берём
+        # хост из base_url; можно переопределить или отключить ("") в конфиге.
+        default_suffix = urllib.parse.urlparse(self.base_url).netloc.split(":")[0]
+        self.filename_suffix = server_cfg.get("filename_suffix", default_suffix)
         self._lock = threading.Lock()
         self._jar = http.cookiejar.CookieJar()
         self._opener = self._build_opener()
@@ -134,6 +139,11 @@ class AntizapretClient:
                 raise AntizapretError(f"панель ответила HTTP {exc.code}") from exc
         return None
 
+    def _filename(self, prefix: str, profile_name: str) -> str:
+        if self.filename_suffix:
+            return f"{prefix}-{profile_name}-({self.filename_suffix}).ovpn"
+        return f"{prefix}-{profile_name}.ovpn"
+
     def get_download_links(self, profile_name: str) -> dict:
         if not PROFILE_NAME_RE.match(profile_name):
             raise ValueError("некорректное имя профиля")
@@ -142,8 +152,8 @@ class AntizapretClient:
             if not self._logged_in:
                 self._login()
 
-            antizapret_url = self._generate_with_retry(f"antizapret-{profile_name}.ovpn")
-            vpn_url = self._generate_with_retry(f"vpn-{profile_name}.ovpn")
+            antizapret_url = self._generate_with_retry(self._filename("antizapret", profile_name))
+            vpn_url = self._generate_with_retry(self._filename("vpn", profile_name))
 
         if not antizapret_url and not vpn_url:
             raise ProfileNotFound(profile_name)
