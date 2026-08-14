@@ -15,5 +15,27 @@
   "instances_auth_token": "CHANGE-ME-SECRET-TOKEN",
   "instances": [
     { "name": "DC-1 / local", "url": "http://127.0.0.1:8888/api/state" }
-  ]
+  ],
+  "vpn_profiles": {
+    "enabled": false,
+    "rate_limit": { "max_requests": 5, "window_seconds": 300 },
+    "servers": [
+      {
+        "id": "dc1",
+        "title": "DC-1 / Москва",
+        "base_url": "https://vpn1.example.com",
+        "admin_username": "profiles-bot",
+        "admin_password": "CHANGE-ME-PASSWORD",
+        "verify_tls": true
+      },
+      {
+        "id": "dc2",
+        "title": "DC-2 / Берлин",
+        "base_url": "https://vpn2.example.com",
+        "admin_username": "profiles-bot",
+        "admin_password": "CHANGE-ME-PASSWORD",
+        "verify_tls": true
+      }
+    ]
+  }
 }

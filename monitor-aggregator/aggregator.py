@@ -13,9 +13,12 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from antizapret_client import AntizapretClient, AntizapretError, ProfileNotFound
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("AGGREGATOR_CONFIG", BASE_DIR / "config" / "aggregator.json"))
@@ -28,6 +31,21 @@ SESSION_COOKIE = "ma_session"
 
 _sessions: dict[str, float] = {}
 _sessions_lock = threading.Lock()
+
+_rate_buckets: dict[str, deque] = {}
+_rate_lock = threading.Lock()
+
+
+def _rate_limited(key: str, max_requests: int, window_seconds: int) -> bool:
+    now = time.monotonic()
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(key, deque())
+        while bucket and now - bucket[0] > window_seconds:
+            bucket.popleft()
+        if len(bucket) >= max_requests:
+            return True
+        bucket.append(now)
+        return False
 
 
 def _new_session() -> str:
@@ -74,6 +92,20 @@ def _get_cookie(handler, name: str) -> str:
 def load_config() -> dict:
     with CONFIG_PATH.open(encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def build_profile_clients(config: dict) -> dict[str, AntizapretClient]:
+    servers = ((config.get("vpn_profiles") or {}).get("servers")) or []
+    clients = {}
+    for server_cfg in servers:
+        try:
+            client = AntizapretClient(server_cfg)
+        except KeyError as exc:
+            print(f"[vpn_profiles] пропущен сервер без обязательного поля {exc}: {server_cfg.get('id')}",
+                  file=sys.stderr)
+            continue
+        clients[client.id] = client
+    return clients
 
 
 def atomic_write_json(path: Path, data) -> None:
@@ -222,6 +254,13 @@ def _is_authorized(handler: BaseHTTPRequestHandler, auth_cfg: dict) -> bool:
 def make_handler(agg: Aggregator, config: dict):
     auth_cfg = config.get("auth") or {}
 
+    profiles_cfg = config.get("vpn_profiles") or {}
+    profiles_enabled = bool(profiles_cfg.get("enabled"))
+    profile_clients = build_profile_clients(config) if profiles_enabled else {}
+    rl_cfg = profiles_cfg.get("rate_limit") or {}
+    RL_MAX = int(rl_cfg.get("max_requests", 5))
+    RL_WINDOW = int(rl_cfg.get("window_seconds", 300))
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             sys.stderr.write("[http] %s - %s\n" % (self.address_string(), fmt % args))
@@ -244,6 +283,15 @@ def make_handler(agg: Aggregator, config: dict):
                 return
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def _send_html(self, html: str) -> None:
+            data = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             if self.command != "HEAD":
@@ -301,6 +349,33 @@ def make_handler(agg: Aggregator, config: dict):
                     self._send_json(exc.code, err_body)
                 except Exception as exc:
                     self._send_json(502, {"error": f"instance unreachable: {exc}"})
+                return
+
+            if path == "/profiles" and profiles_enabled:
+                self._send_file(WEB_DIR / "profiles" / "index.html", "text/html; charset=utf-8")
+                return
+
+            if path == "/profiles/api/list":
+                if not profiles_enabled:
+                    self._send_json(404, {"error": "not found"})
+                    return
+                servers = [{"id": c.id, "title": c.title} for c in profile_clients.values()]
+                self._send_json(200, {"servers": servers})
+                return
+
+            if path.startswith("/profiles/") and profiles_enabled:
+                server_id = path[len("/profiles/"):].strip("/")
+                client = profile_clients.get(server_id)
+                if not client:
+                    self.send_error(404)
+                    return
+                try:
+                    html = (WEB_DIR / "profiles" / "landing.html").read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    self.send_error(404)
+                    return
+                html = html.replace("__SERVER_ID__", client.id).replace("__SERVER_TITLE__", client.title)
+                self._send_html(html)
                 return
 
             self.send_error(404)
@@ -404,6 +479,47 @@ def make_handler(agg: Aggregator, config: dict):
                     self._send_json(exc.code, err_body)
                 except Exception as exc:
                     self._send_json(502, {"error": f"instance unreachable: {exc}"})
+                return
+
+            if path.startswith("/profiles/") and path.endswith("/api/download") and profiles_enabled:
+                server_id = path[len("/profiles/"):-len("/api/download")].strip("/")
+                client = profile_clients.get(server_id)
+                if not client:
+                    self._send_json(404, {"success": False, "message": "сервер не найден"})
+                    return
+
+                client_ip = self.client_address[0]
+                if _rate_limited(f"{server_id}:{client_ip}", RL_MAX, RL_WINDOW):
+                    self._send_json(429, {"success": False, "message": "Слишком много попыток. Подождите немного и попробуйте снова."})
+                    return
+
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    data = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    self._send_json(400, {"success": False, "message": "bad json"})
+                    return
+                name = str(data.get("name", "")).strip()
+
+                try:
+                    links = client.get_download_links(name)
+                except ValueError:
+                    self._send_json(400, {"success": False, "message": "Некорректное имя профиля."})
+                    return
+                except ProfileNotFound:
+                    self._send_json(404, {"success": False, "message": "Профиль с таким именем не найден."})
+                    return
+                except AntizapretError as exc:
+                    print(f"[vpn_profiles] {server_id}: {exc}", file=sys.stderr)
+                    self._send_json(502, {"success": False, "message": "Панель профилей временно недоступна. Попробуйте позже."})
+                    return
+                except Exception as exc:
+                    print(f"[vpn_profiles] {server_id}: unexpected error: {exc}", file=sys.stderr)
+                    self._send_json(502, {"success": False, "message": "Не удалось получить ссылки. Попробуйте позже."})
+                    return
+
+                self._send_json(200, {"success": True, **links})
                 return
 
             self.send_error(404)
